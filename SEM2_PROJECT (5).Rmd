@@ -1,0 +1,571 @@
+---
+title: "Uveal_mel_liv_metas"
+output: html_document
+date: "2023-06-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(scRNAseq)
+library(scater)
+library(scuttle)
+library(AnnotationHub)
+library(DropletUtils)
+library(sctransform)
+library(metap)
+library(multtest)
+```
+
+```{r}
+# Load the PBMC dataset
+WLO2.data10X <- Read10X(data.dir = "C:/Users/QP/Documents/KazimR/uveal_liv_met/WLO2/") #unique.features = TRUE
+
+WLO3.data10X <- Read10X(data.dir = "C:/Users/QP/Documents/KazimR/uveal_liv_met/WLO2/")
+
+```
+
+```{r}
+WLO2_10x_seurat <- CreateSeuratObject(counts = WLO2.data10X,project = "WLO2")
+# Initialize the Seurat object with the raw (non-normalized data).
+WLO3_10x_seurat <- CreateSeuratObject(counts = WLO3.data10X, project= "WLO3")
+rm(WLO2.data10X)
+rm(WLO3.data10X)
+
+```
+
+
+```{r,echo =FALSE}
+gc()
+set.seed(1234)
+e.out1 <- emptyDrops(WLO2_10x_seurat@assays$RNA@counts)
+gc()
+
+set.seed(1234)
+e.out2 <- emptyDrops(WLO3_10x_seurat@assays$RNA@counts)
+gc()
+```
+
+```{r}
+WLO2_10x_seurat <- WLO2_10x_seurat[,which(e.out1$FDR <= 0.01)] #2819    cell 
+WLO3_10x_seurat <- WLO3_10x_seurat[,which(e.out2$FDR <= 0.01)] #8505    cell 
+rm(e.out1)
+rm(e.out2)
+
+```
+
+
+
+```{r}
+#. Outlier cells with a high ratio of number of detected UMI to genes (>3 median absolute deviations from median) were removed using Scater (McCarthy et al. 2017)
+
+outlier_cells1 <- isOutlier(WLO2_10x_seurat@meta.data$nCount_RNA / WLO2_10x_seurat@meta.data$nFeature_RNA, nmads = 3,type="higher" ) ;table(outlier_cells1)
+
+WLO2_10x_seurat  <- WLO2_10x_seurat[,which(outlier_cells1 == FALSE)] ;WLO2_10x_seurat  #2725    cell
+```
+```{r}
+outlier_cells2 <- isOutlier(WLO3_10x_seurat@meta.data$nCount_RNA / WLO3_10x_seurat@meta.data$nFeature_RNA, nmads = 3,type="higher" ) ;table(outlier_cells2)
+WLO3_10x_seurat  <- WLO3_10x_seurat[,which(outlier_cells2 == FALSE)] ;WLO3_10x_seurat  #8169  cell
+```
+
+```{r}
+WLO2_10x_seurat <- PercentageFeatureSet(WLO2_10x_seurat, "^MT-", col.name = "percent.mito")
+WLO3_10x_seurat <- PercentageFeatureSet(WLO3_10x_seurat, "^MT-", col.name = "percent.mito")
+ 
+```
+
+
+```{r}
+WLO2_10x_seurat <- subset(WLO2_10x_seurat, subset =
+                        nFeature_RNA > 100 & nCount_RNA > 400 & nFeature_RNA < 8000 &
+                        percent.mito < 10) #1199 
+
+WLO3_10x_seurat <- subset(WLO3_10x_seurat, subset =
+                        nFeature_RNA > 100 & nCount_RNA > 400 & nFeature_RNA < 8000 &
+                        percent.mito < 10) #5045  
+
+#total cells : 6339 , in original 6341 in the article
+```
+
+
+```{r}
+QC_WLO2_Seurat <-   CellCycleScoring(QC_WLO2_Seurat, 
+                                 g2m.features = cc.genes.updated.2019$g2m.genes, 
+                                 s.features =  cc.genes.updated.2019$s.genes)
+
+QC_WLO3_Seurat <-  CellCycleScoring(QC_WLO3_Seurat, 
+                                 g2m.features = cc.genes.updated.2019$g2m.genes, 
+                                 s.features =  cc.genes.updated.2019$s.genes)
+
+```
+
+
+
+```{r}
+saveRDS(WLO2_10x_seurat, file='QC_WLO2_Seurat.rds')
+saveRDS(WLO3_10x_seurat, file='QC_WLO3_Seurat.rds')
+
+```
+
+
+```{r}
+set.seed(1234)
+merged_seurat <- merge(QC_WLO2_Seurat,QC_WLO3_Seurat)
+merged_seurat.list <- SplitObject(merged_seurat, split.by = "orig.ident")
+
+WLO2_seurat <- merged_seurat.list[["WLO2"]]
+WLO3_seurat <- merged_seurat.list[["WLO3"]]
+
+
+WLO2_seurat <- SCTransform(WLO2_seurat, vst.flavor = "v2", verbose = FALSE,vars.to.regress = "percent.mito",return.only.var.genes = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>% 
+  CellCycleScoring(g2m.features = cc.genes.updated.2019$g2m.genes, 
+                                 s.features =  cc.genes.updated.2019$s.genes)
+
+
+WLO3_seurat <- SCTransform(WLO3_seurat, vst.flavor = "v2", verbose = FALSE,vars.to.regress = "percent.mito",return.only.var.genes = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>% 
+  CellCycleScoring(g2m.features = cc.genes.updated.2019$g2m.genes, 
+                                 s.features =  cc.genes.updated.2019$s.genes)
+
+merged_seurat.list <- list(WLO2_seurat = WLO2_seurat, WLO3_seurat = WLO3_seurat)
+features <- SelectIntegrationFeatures(object.list = merged_seurat.list, nfeatures = 3000)
+merged_seurat.list <- PrepSCTIntegration(object.list = merged_seurat.list, anchor.features = features)
+
+seurat.anchors <- FindIntegrationAnchors(object.list = merged_seurat.list, normalization.method = "SCT",
+                                         anchor.features = features, reference = 1)
+
+all_genes <- sort(intersect(rownames(WLO2_seurat),rownames(WLO3_seurat)))
+
+combined.sct <- IntegrateData(anchorset = seurat.anchors, normalization.method = "SCT",features.to.integrate = all_genes)
+
+
+combined.sct <- RunPCA(combined.sct, verbose = FALSE)
+combined.sct <- RunUMAP(combined.sct, reduction = "pca", dims = 1:30, verbose = FALSE)
+combined.sct <- FindNeighbors(combined.sct, reduction = "pca", dims = 1:30)
+combined.sct <- FindClusters(combined.sct, resolution =2)
+
+
+
+```
+
+```{r}
+saveRDS(combined.sct, file='WLO2_WLO3_integrated.rds')
+
+```
+
+
+```{r}
+p1 <- DimPlot(combined.sct, reduction = "umap", group.by = "seurat_clusters", label = TRUE,
+        repel = TRUE)
+
+p2 <- DimPlot(combined.sct, reduction = "umap", group.by = "orig.ident", label = TRUE,
+        repel = TRUE) 
+p1|p2
+```
+
+
+```{r}
+## DOT PLOT to assign cell types based on canonical gene markers
+DefaultAssay(combined.sct) <- "SCT"
+
+DotPlot(combined.sct, features =  list(
+  'Tumor' = c('MLANA', 'MITF', 'DCT'),
+  'HSCs' = c('ACTA2', 'COL1A1','COL1A2','TAGLN','COL3A1','RBP1','SPARC'),
+  'Endothelial ' = c('PECAM1', 'VWF'),
+  'NK' = c('KLRF1'),
+  'T cell' = c('CD3D'),
+  'B cell' = c('CD19', 'CD79A', 'MS4A1'),
+  'Plasma' = c('IGHG1', 'MZB1','SDC1'),
+  'PDCs' = c('LILRB4', 'GZMB'),
+  'Dendritic' = c('CLEC9A', 'CD1C', 'CD1E'),
+  'Monocytes' = c('S100A8', 'S100A9', 'S100A12'),
+  'Macrophages' = c('CD163', 'IL10', 'C1QA', 'C1QB', 'C1QC')
+))
+```
+
+```{r}
+cluster_annotations <- list(
+  '0' = 'T',
+  '1' = 'T',
+  '2' = 'HSCs',
+  '3' = 'Macrophage',
+  '4' = 'T',
+  '5' = 'T',
+  '6' = 'T', 
+  '7' = 'Monocyte',
+  '8' = 'T',
+  '9' = 'Tumor',
+  '10' = 'Tumor',
+  '11' = 'Tumor',
+  '12' = 'NK',
+  '13' = 'T',
+  '14' = 'T',
+  '15' = 'Endo',
+  '16' = 'Tumor', 
+  '17' = 'T',
+  '18' = 'NK',
+  '19' = 'Tumor',
+  '20' = 'Tumor',
+  '21' = 'Macrophage',
+  '22' = 'T',
+  '23' = 'T',
+  '24' = 'T',
+  '25' = 'HSCs',
+  '26' = 'HSCs',
+  '27' = 'Dendric',
+  '28' = 'PDCs',
+  '29' = 'B',
+  '30' = 'Dendric',
+  '31' = 'Plasma'
+)
+# add CellType to seurat metadata
+combined.sct$CellType <- unlist(cluster_annotations[combined.sct$seurat_clusters])
+combined.sct$CellType_cluster <- paste0(combined.sct$CellType, '-', combined.sct$seurat_clusters)
+
+png('basic_umap_celltypes.png', width=8, height=7, res=200, units='in')
+DimPlot(combined.sct, reduction = "umap", group.by='CellType')  + ggtitle('UMAP colored by cell type annotations')
+dev.off()
+
+png('basic_umap_celltype_clusters.png', width=8, height=8, res=200, units='in')
+DimPlot(combined.sct, reduction = "umap", group.by='CellType_cluster', label=TRUE) + ggtitle('UMAP colored by cell type + cluster') + NoLegend()
+dev.off()
+
+```
+
+
+```{r}
+## CELL CYCLE SCORİNG FOR TUMOR  CELL 
+
+#subset tumor cell 
+only_tumor_cell <- subset(combined.sct, subset = CellType == "Tumor") 
+
+table(only_tumor_cell@meta.data$Phase, only_tumor_cell@meta.data$orig.ident)
+
+
+
+categories <- c('S', 'G2M', 'G1')
+WLO2_counts <- c(130, 60, 97)
+WLO3_counts <- c(122, 38,711)
+
+
+# Calculate percentages
+WLO2_perc <- WLO2_counts / sum(WLO2_counts) * 100
+WLO3_perc <- WLO3_counts / sum(WLO3_counts) * 100
+
+# Create a data frame
+df <- data.frame(Category = rep(categories, 2),
+                 Sample = c(rep("WLO2", length(categories)), rep("WLO3", length(categories))),
+                 Percentage = c(WLO2_perc, WLO3_perc))
+# Create the bar plot
+ggplot(df, aes(x = Sample, y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(x = "Sample", y = "Percentage", title = "Cell Cycle Counts of WLO2 and WLO3") +
+  scale_fill_manual(values = c("#ff6d55", "#24b24b", "#446D92")) + theme_minimal()
+  
+ 
+```
+
+
+```{r}
+pie.table <- as.data.frame(table( combined.sct@meta.data$CellType ,combined.sct@meta.data$orig.ident ))
+slices <- pie.table[pie.table$Var2 == "WLO2","Freq"]
+lbls <- rownames(pie.table)
+
+fig <- plot_ly(pie.table, labels = lbls, values = slices, type = 'pie',
+        textposition = 'inside',
+        textinfo = 'label+percent')
+        
+fig
+```
+
+
+
+```{r}
+
+data <- pie.table[pie.table$Var2 == "WLO2", c('Var1', 'Freq')]
+
+colors <- c('rgb(211,94,96)', 'rgb(128,133,133)', 'rgb(144,103,167)', 'rgb(171,104,87)', 'rgb(114,147,203)')
+
+fig1 <- plot_ly(data, labels = ~Var1, values = ~Freq, type = 'pie',
+      
+        textinfo = 'label+percent',
+        insidetextfont = list(color = '#FFFFFF'),
+        hoverinfo = 'text',
+        text = ~paste('Number of',Var1, 'cells=', Freq),
+        showlegend = FALSE)
+fig1 <- fig %>% layout(title = 'United States Personal Expenditures by Categories in 1960',
+         xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+
+fig1 <- fig1 %>% layout(title = 'United States Personal Expenditures by Categories in 1960',
+         xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+
+fig1
+
+```
+
+
+
+```{r}
+data <- pie.table[pie.table$Var2 == "WLO3", c('Var1', 'Freq')]
+
+fig2 <- plot_ly(data, labels = ~Var1, values = ~Freq, type = 'pie',
+      
+        textinfo = 'label+percent',
+        insidetextfont = list(color = '#FFFFFF'),
+        hoverinfo = 'text',
+        text = ~paste('Number of',Var1, 'cells=', Freq),
+        showlegend = FALSE)
+fig2 <- fig2 %>% layout(title = 'United States Personal Expenditures by Categories in 1960',
+         xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+
+fig2
+```
+
+
+
+```{r}
+# deg analysis without subsetting integrated data
+
+DEGs_SCT <- combined.sct
+DefaultAssay(DEGs_SCT) <- "SCT" 
+
+DEGs_SCT$DEGs_celltype <- paste(DEGs_SCT$CellType , DEGs_SCT$orig.ident,
+    sep = "_")
+
+Idents(DEGs_SCT) <- "DEGs_celltype"
+
+DEGs_SCT <- PrepSCTFindMarkers(DEGs_SCT , assay = "SCT") #requires merges list of sct assays
+
+tumor_DEG <- FindMarkers(DEGs_SCT, assay = "SCT", ident.1 = "Tumor_WLO2", ident.2 = "Tumor_WLO3",
+    verbose = FALSE) #object[["SCT"]]]@scale.data.
+tumor_DEG_LOGPOS_0.05 <- subset(tumor_DEG, subset = avg_log2FC >= 0 & p_val_adj <= 0.05)
+tumor_DEG_LOGPOS_0.05 <- subset(tumor_DEG, subset = avg_log2FC >= 0 )
+
+head(tumor_DEG, n = 15) #583
+
+#
+
+```
+
+
+
+
+```{r}
+degtumor <- data.frame(rownames(tumor_DEG_LOGPOS_0.05), tumor_DEG_LOGPOS_0.05$avg_log2FC)
+ degtumor <- degtumor[order(degtumor$tumor_DEG_LOGPOS_0.05.avg_log2FC, decreasing = TRUE), ]
+
+write.table(degtumor, file = "ranked_genes_all_LOGPOS_0.05.rnk", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(degtumor$rownames.tumor_DEG., file = "ranked_genes.csv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+
+
+```{r}
+# makalede  wlo2 ve wlo3 akrşılaştırılmıs spesifik oalrak kanser hücreleri değil
+
+DEGs_SCT <- combined.sct
+DefaultAssay(DEGs_SCT) <- "SCT"
+
+DEGs_SCT$DEGs_celltype <- paste(DEGs_SCT$CellType , DEGs_SCT$orig.ident,
+    sep = "_")
+
+Idents(DEGs_SCT) <- "orig.ident"
+
+DEGs_SCT <- PrepSCTFindMarkers(DEGs_SCT , assay = "SCT") #requires merges list of sct assays
+
+tumor_DEG <- FindMarkers(DEGs_SCT, assay = "SCT", ident.1 = "WLO2", ident.2 = "WLO3",
+    verbose = FALSE)
+head(tumor_DEG, n = 15) #583
+```
+
+```{r}
+#ridge plot
+DEGs_SCT <- combined.sct
+DefaultAssay(DEGs_SCT) <- "RNA"
+DEGs_SCT <- NormalizeData(DEGs_SCT)
+ DEGs_SCT <- subset(DEGs_SCT, subset = CellType == "Tumor")
+
+RidgePlot(DEGs_SCT, features = c("CDH1","ECM1","EIF1B","FXR1","HTR2B","ID2","LMCD1","LTA4H","MTUS1","RAB31","ROBO1","SATB1"), ncol = 4, group.by = "orig.ident")
+
+
+```
+
+
+# inferCNV OF WLO2 
+
+```{r, echo=FALSE,results= 'hide'}
+library(infercnv) # JAGS (Just Another Gibbs Sampler) must be downloaded
+
+#FİND HİGH QUALİTY T CELLS İN each sample 
+
+DEGs_SCT <- combined.sct
+DefaultAssay(DEGs_SCT) <- "RNA"
+genes_to_check <- c("PRAME", "HTR2B", "MLANA", "MITF")
+
+T_cell_names <- rownames(DEGs_SCT@meta.data[DEGs_SCT$CellType == "T" ,  ])
+T_cell_normal_index <- colSums(DEGs_SCT@assays$RNA@counts[ genes_to_check ,T_cell_names ]) == 0
+T_cell_normal_index <- as.data.frame(T_cell_normal_index)
+T_cell_normal_index <- subset(T_cell_normal_index, subset = T_cell_normal_index == "TRUE")
+T_cell_names_normal <- rownames(T_cell_normal_index)
+
+DEGs_SCT$for_CNV <- DEGs_SCT$CellType
+DEGs_SCT@meta.data[ T_cell_names_normal , "for_CNV" ] <- "normal_T"
+
+# Use all NORMAL T cell as reference 
+subset_normal_T <- subset(DEGs_SCT, subset = for_CNV == "normal_T")
+
+WLO2_CNV_Tumor <- subset(DEGs_SCT, subset = orig.ident == "WLO2" &  for_CNV == "Tumor")
+WLO2_CNV <- merge(WLO2_CNV_Tumor,subset_normal_T)
+WLO2_CNV_DF <- data.frame(col1 = rownames(WLO2_CNV@meta.data) , col2= WLO2_CNV@meta.data$for_CNV)
+
+write.table(WLO2_CNV_DF, file = "WLO2_annotation_CNV.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# chromosome - gene information txt file 
+#load(file = "chr_gene.txt")
+
+
+```
+
+```{r,echo=FALSE,results='hide'}
+infercnv_obj <-  CreateInfercnvObject(
+  raw_counts_matrix= WLO2_CNV@assays$RNA@counts ,
+  annotations_file="WLO2_annotation_CNV.txt",
+  delim="\t",
+  gene_order_file="chr_gene.txt",
+  ref_group_names= "normal_T")
+
+
+## Running the full default analysis
+
+out_dir = tempfile()
+infercnv_obj_default = infercnv::run(infercnv_obj,
+     cutoff=0.1,
+                                         out_dir=out_dir, 
+                                         cluster_by_groups= FALSE, 
+                                         denoise=TRUE,
+                                         HMM=FALSE,
+                                         num_threads=2,
+                                         analysis_mode="samples",
+                                         no_plot=FALSE,
+     plot_steps=FALSE,
+     no_prelim_plot=TRUE,
+     png_res= 1980
+)
+
+
+```
+```{r}
+## Running the full default analysis
+
+out_dir = tempfile()
+infercnv_obj_default = infercnv::run(
+    infercnv_obj,
+    cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+    out_dir=out_dir,
+    cluster_by_groups=TRUE, 
+    plot_steps=FALSE,
+    denoise=TRUE,
+    HMM=FALSE,
+    no_prelim_plot=TRUE,
+    png_res=60
+)
+```
+
+
+
+```{r, echo=FALSE}
+
+knitr::include_graphics(paste(out_dir, "infercnv.png", sep="/"))
+```
+
+ #### INFERCNV OF WLO3 TUMOR CELLS VS ALL HEALTHY T CELLS(BOTH IN WLO2 AND WLO3)
+
+```{r}
+
+
+DEGs_SCT <- combined.sct
+DefaultAssay(DEGs_SCT) <- "RNA"
+DEGs_SCT <- NormalizeData(DEGs_SCT) ## ??? 
+
+genes_to_check <- c("PRAME", "HTR2B", "MLANA", "MITF")
+
+T_cell_names <- rownames(DEGs_SCT@meta.data[DEGs_SCT$CellType == "T" ,  ])
+T_cell_normal_index <- colSums(DEGs_SCT@assays$RNA@counts[ genes_to_check ,T_cell_names ]) == 0
+T_cell_normal_index <- as.data.frame(T_cell_normal_index)
+T_cell_normal_index <- subset(T_cell_normal_index, subset = T_cell_normal_index == "TRUE")
+T_cell_names_normal <- rownames(T_cell_normal_index)
+
+DEGs_SCT$for_CNV <- DEGs_SCT$CellType
+DEGs_SCT@meta.data[ T_cell_names_normal , "for_CNV" ] <- "normal_T"
+
+# Use all NORMAL T cell as reference 
+subset_normal_T <- subset(DEGs_SCT, subset = for_CNV == "normal_T")
+
+WLO3_CNV_Tumor <- subset(DEGs_SCT, subset = orig.ident == "WLO3" &  for_CNV == "Tumor")
+WLO3_CNV <- merge(WLO3_CNV_Tumor,subset_normal_T)
+WLO3_CNV_DF <- data.frame(col1 = rownames(WLO3_CNV@meta.data) , col2= WLO3_CNV@meta.data$for_CNV)
+
+write.table(WLO3_CNV_DF, file = "WLO3_annotation_CNV.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+
+
+
+```
+```{r}
+infercnv_obj <-  CreateInfercnvObject(
+  raw_counts_matrix= WLO3_CNV@assays$RNA@counts ,
+  annotations_file="WLO3_annotation_CNV.txt",
+  delim="\t",
+  gene_order_file="chr_gene.txt",
+  ref_group_names= "normal_T")
+```
+
+
+
+```{r, results="hide"}
+## Running the full default analysis
+
+out_dir = tempfile()
+infercnv_obj_default = infercnv::run(infercnv_obj,
+     cutoff=0.1,
+                                         out_dir=out_dir, 
+                                         cluster_by_groups= FALSE, 
+                                         denoise=TRUE,
+                                         HMM=FALSE,
+                                         num_threads=2,
+                                         analysis_mode="samples",
+                                         no_plot=FALSE,
+     plot_steps=FALSE,
+     no_prelim_plot=TRUE,
+     png_res= 200
+)
+
+
+
+
+```
+
+```{r, echo=FALSE}
+
+knitr::include_graphics(paste(out_dir, "infercnv.png", sep="/"))
+```
+```
+
+
+
+#TRAJECTORY ANALYSİS 
+
+
+
+
+
